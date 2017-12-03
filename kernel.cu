@@ -173,10 +173,12 @@ int main(int argc, char* argv[]) {
 	ifstream fin("cluster.txt");
 	//freopen("cluster.txt", "r", stdin);
 	srand(time(0));
-	point_t pts[312];
-	int len = 312;
-	for (int i = 0; i < len; i++) {
-		fin >> pts[i].cor[0] >> pts[i].cor[1];
+	point_t pts[1000];
+	int len = 0;
+	double a, b;
+	while (fin >> a >> b) {
+		pts[len].cor[0] = a;
+		pts[len++].cor[1] = b;
 	}
 	for (int i = 0; i < len; i++) {
 		pts[i].dimen = 2;
