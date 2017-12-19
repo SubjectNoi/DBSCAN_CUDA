@@ -29,6 +29,8 @@ struct point_t {
 
 };
 
+point_t pts[100000];
+
 //__constant__ point_t pts[1000];
 
 double __device__ cudaCalcDistance(const point_t &src, const point_t &dest) {
@@ -39,7 +41,7 @@ double __device__ cudaCalcDistance(const point_t &src, const point_t &dest) {
 	return res;
 }
 
-/*			p0	p1	p2	p3	...	pn
+/*				p0	p1	p2	p3	...	pn
  *	point0->	*	*	*	*	...	*
  *	point1->	*	*	*	*	...	*
  *	point2->	*	*	*	*	...	*
@@ -145,8 +147,17 @@ point_t* DBSCAN(point_t* points, int len, double minEps, int minPts) {
 	threads.x = threadsNum;
 	dim3 blocks;
 	blocks.x = (len * len + threads.x - 1) / threads.x;
+	cudaEvent_t kernalStart, kernalEnd;
+	cudaEventCreate(&kernalStart);
+	cudaEventCreate(&kernalEnd);
 
+	cudaEventRecord(kernalStart, 0);
 	cudaGetNeighbors << <blocks, threads >> > (cudaPoints, len, cudaNeighborArray, minEps, minPts);
+	cudaEventRecord(kernalEnd, 0);
+	cudaEventSynchronize(kernalEnd);
+	float eps = 0.0;
+	cudaEventElapsedTime(&eps, kernalStart, kernalEnd);
+	printf("Kernal Function %f.\n", eps);
 
 	CHECK_CUDA_STATUS(cudaMemcpy(hostNeighborArray, cudaNeighborArray, len * len * sizeof(int), cudaMemcpyDeviceToHost));
 	CHECK_CUDA_STATUS(cudaMemcpy(points, cudaPoints, len * sizeof(point_t), cudaMemcpyDeviceToHost));
@@ -167,38 +178,49 @@ point_t* DBSCAN(point_t* points, int len, double minEps, int minPts) {
 }
 
 int main(int argc, char* argv[]) {
+	srand(time(0));
 	cudaEvent_t start, end;
 	cudaEventCreate(&start);
 	cudaEventCreate(&end);
 	ifstream fin("cluster.txt");
 	//freopen("cluster.txt", "r", stdin);
 	srand(time(0));
-	point_t pts[1000];
 	int len = 0;
 	double a, b;
+	
 	while (fin >> a >> b) {
 		pts[len].cor[0] = a;
 		pts[len++].cor[1] = b;
 	}
+	int t = len;
+	for (int iter = 0; iter < 9; iter++) {
+		for (int i = 0; i < t; i++) {
+			pts[len].cor[0] = pts[i].cor[0];
+			pts[len].cor[1] = pts[i].cor[1];
+			len++;
+		}
+	}
+	printf("%d\n", len);
 	for (int i = 0; i < len; i++) {
 		pts[i].dimen = 2;
 		pts[i].vis = -1;
 		pts[i].idx = -1;
 	}
-	for (int i = 0; i < len; i++) cout << pts[i].cor[0] << " " << pts[i].cor[1] << " " << pts[i].idx << endl;
+	//for (int i = 0; i < len; i++) cout << pts[i].cor[0] << " " << pts[i].cor[1] << " " << pts[i].idx << endl;
 	clock_t st;
 	cudaEventRecord(start, 0);
-	st = clock();
+	//st = clock();
 	DBSCAN(pts, len, 2.0, 3);
-	printf("Parallel time: %d ms\n", clock() - st);
+	//printf("Parallel time: %d ms\n", clock() - st);
 	cudaEventRecord(end, 0);
+	cudaEventSynchronize(end);
 	float epstime;
 	cudaEventElapsedTime(&epstime, start, end);
-	//printf("Parallel time: %f ms\n", epstime);
+	printf("Parallel time: %f ms\n", (double)epstime);
 	
 	map <int, int> mp;
 	for (int i = 0; i < len; i++) {
-		cout << pts[i].cor[0] << " " << pts[i].cor[1] << " " << pts[i].idx << endl;
+		//cout << pts[i].cor[0] << " " << pts[i].cor[1] << " " << pts[i].idx << endl;
 		mp[pts[i].idx]++;
 	}
 	
