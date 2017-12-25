@@ -45,7 +45,7 @@ double __device__ cudaCalcDistance(const point_t &src, const point_t &dest) {
 }
 
 
-/*				p0	p1	p2	p3	...	pn
+/*			p0	p1	p2	p3	...	pn
  *	point0->	*	*	*	*	...	*
  *	point1->	*	*	*	*	...	*
  *	point2->	*	*	*	*	...	*
