@@ -11,6 +11,8 @@
 #include <windows.h>
 #include <queue>
 #include <map>
+#include <winbase.h>
+#include <omp.h>
 
 #define CHECK_CUDA_STATUS(val) { if (val) printf("Err: %s: line %d, file %s\n", cudaGetErrorString((cudaError_t)val), __LINE__, __FILE__); } 
 
@@ -18,6 +20,7 @@ using namespace std;
 
 int blk_cnt, thr_cnt;
 float kernal_sum, global_sum;
+int thread_count;
 
 inline unsigned __int64 GetCycle() {
 	__asm _emit 0x0F
@@ -44,8 +47,15 @@ double __device__ cudaCalcDistance(const point_t &src, const point_t &dest) {
 	return res;
 }
 
+double __host__ hostCalcDistance(const point_t &src, const point_t &dest) {
+	double res = 0.0;
+	for (int i = 0; i < src.dimen; i++) {
+		res += (src.cor[i] - dest.cor[i]) * (src.cor[i] - dest.cor[i]);
+	}
+	return res;
+}
 
-/*			p0	p1	p2	p3	...	pn
+/*				p0	p1	p2	p3	...	pn
  *	point0->	*	*	*	*	...	*
  *	point1->	*	*	*	*	...	*
  *	point2->	*	*	*	*	...	*
@@ -95,6 +105,34 @@ void __global__ cudaGetNeighbors(point_t* points, int len, int* neighbors, doubl
 	}
 }
 
+void __host__ hostGetNeighbors(point_t* points, int len, int* neighbors, double minEps, int minPts) {
+	int src, dest, neighborscnt;
+# pragma omp parallel for num_threads(thread_count) schedule(dynamic)
+	for (int i = 0; i < len * len; i++) {
+		src = i / len;
+		dest = i % len;
+		double dist = 0.0;
+		if (src <= dest) {
+			dist = hostCalcDistance(points[src], points[dest]);
+			if (dist < minEps * minEps) {
+				neighbors[i] = 1;
+			}
+			neighbors[dest * len + src] = neighbors[i];
+		}
+	}
+
+	for (int i = 0; i < len; i++) {
+		neighborscnt = 0;
+		src = i * len;
+		for (int j = 0; j < len; j++) {
+			if (i != j) {
+				if (neighbors[src + j]) neighborscnt++;
+			}
+		}
+		if (neighborscnt >= minPts) points[i].vis++;
+	}
+}
+
 void hostSetIdx(point_t* points, int len, int* hostNeighbors) {
 	queue<int> s;
 	int t_idx = 1;
@@ -136,27 +174,25 @@ void hostSetIdx(point_t* points, int len, int* hostNeighbors) {
 point_t* DBSCAN(point_t* points, int len, double minEps, int minPts) {
 
 	int *hostNeighborArray = (int*)malloc(len * len * sizeof(int));
-	for (int i = 0; i < len * len; i++) hostNeighborArray[i] = -1;
+	for (int i = 0; i < len * len; i++) hostNeighborArray[i] = 0;
 
 	point_t* cudaPoints;
-	CHECK_CUDA_STATUS(cudaMalloc((void**)&cudaPoints, len * sizeof(point_t)));
-
 	int *cudaNeighborArray;
+	CHECK_CUDA_STATUS(cudaMalloc((void**)&cudaPoints, len * sizeof(point_t)));
 	CHECK_CUDA_STATUS(cudaMalloc((void**)&cudaNeighborArray, len * len * sizeof(int)));
-
 	CHECK_CUDA_STATUS(cudaMemcpy(cudaPoints, points, len * sizeof(point_t), cudaMemcpyHostToDevice));
 
 	cudaEvent_t kernalStart, kernalEnd;
 	cudaEventCreate(&kernalStart);
 	cudaEventCreate(&kernalEnd);
-
 	cudaEventRecord(kernalStart, 0);
 	cudaGetNeighbors << <blk_cnt, thr_cnt>> > (cudaPoints, len, cudaNeighborArray, minEps, minPts);
+	
 	cudaEventRecord(kernalEnd, 0);
 	cudaEventSynchronize(kernalEnd);
 	float eps = 0.0;
 	cudaEventElapsedTime(&eps, kernalStart, kernalEnd);
-	//printf("Kernal Function %f ms\n", eps);
+	printf("CUDA __device__ time: %8.6f ms\n", eps);
 	kernal_sum += eps;
 
 	CHECK_CUDA_STATUS(cudaMemcpy(hostNeighborArray, cudaNeighborArray, len * len * sizeof(int), cudaMemcpyDeviceToHost));
@@ -178,11 +214,13 @@ point_t* DBSCAN(point_t* points, int len, double minEps, int minPts) {
 }
 
 int main(int argc, char* argv[]) {
+	thread_count = 1;
 	srand(time(0));
 	cudaEvent_t start, end;
 	cudaEventCreate(&start);
 	cudaEventCreate(&end);
-	ifstream fin("cluster.txt");
+	ifstream fin("cluster4.txt");
+	ofstream fout("result.txt");
 	//freopen("cluster.txt", "r", stdin);
 	srand(time(0));
 	int len = 0;
@@ -193,7 +231,7 @@ int main(int argc, char* argv[]) {
 		pts[len++].cor[1] = b;
 	}
 	int t = len;
-	for (int iter = 0; iter <4; iter++) {
+	for (int iter = 0; iter < 0; iter++) {
 		for (int i = 0; i < t; i++) {
 			pts[len].cor[0] = pts[i].cor[0];
 			pts[len].cor[1] = pts[i].cor[1];
@@ -206,35 +244,36 @@ int main(int argc, char* argv[]) {
 		pts[i].vis = -1;
 		pts[i].idx = -1;
 	}
-	printf("CUDA threads number: ");
+	printf("CUDA Blocks, Threads number:\n");
 	while (cin >> blk_cnt >> thr_cnt) {
 		//for (int i = 0; i < len; i++) cout << pts[i].cor[0] << " " << pts[i].cor[1] << " " << pts[i].idx << endl;
 		kernal_sum = 0.0;
 		global_sum = 0.0;
-		for (int i = 0; i < 10; i++) {
+		//for (int i = 0; i < 2; i++) {
 			clock_t st;
 			cudaEventRecord(start, 0);
 			//st = clock();
-			DBSCAN(pts, len, 2.0, 3);
+			DBSCAN(pts, len, 0.04, 3);
 			//printf("Parallel time: %d ms\n", clock() - st);
 			cudaEventRecord(end, 0);
 			cudaEventSynchronize(end);
 			float epstime;
 			cudaEventElapsedTime(&epstime, start, end);
-			//printf("Parallel time: %f ms\n", (double)epstime);
+			printf("CUDA  __host__  time: %8.6f ms\n", (double)epstime);
 			global_sum += epstime;
-/*
+			
 			map <int, int> mp;
 			for (int i = 0; i < len; i++) {
 				//cout << pts[i].cor[0] << " " << pts[i].cor[1] << " " << pts[i].idx << endl;
 				mp[pts[i].idx]++;
+				fout << pts[i].cor[0] << ", " << pts[i].cor[1] << ", " << pts[i].idx << endl;
 			}
 
 			map <int, int>::iterator it = mp.begin();
 			for (; it != mp.end(); it++) cout << it->first << " " << it->second << endl;
-*/
-		}
-		printf("Average Kernal: %f, Average Global: %f\n", kernal_sum / 10.0, global_sum / 10.0);
+			
+		//}
+		//printf("Average Kernal: %f, Average Global: %f\n", kernal_sum / 2.0, global_sum / 2.0);
 	}
 	return 0;
 }
